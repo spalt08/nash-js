@@ -1,4 +1,4 @@
-import { s2i, i2h } from './utils';
+import { s2i, i2h, h2i, i2s } from './utils';
 
 // Key Constants
 const _c = new Uint32Array([
@@ -129,5 +129,7 @@ export default {
   encrypt,
   decrypt,
   i2h,
+  h2i,
   s2i,
+  i2s,
 };
