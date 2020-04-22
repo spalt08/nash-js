@@ -32,6 +32,7 @@
   },
   "ignorePatterns": [
       "dist/",
+      "example/",
       "tests/",
       "node_modules/"
   ]

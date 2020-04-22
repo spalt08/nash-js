@@ -2,43 +2,23 @@ import { s2i, i2h } from './utils';
 
 // Key Constants
 const _c = new Uint32Array([
-  0x99fcef34, 0x3fda8279, // sqrt(2)
-  0xd0b09954, 0x3fe76cf5, // sqrt(3)
-  0xb97f4a80, 0x3fce3779, // sqrt(5)
-  0xa74be3a8, 0x3fe4a9fe, // sqrt(7)  
-  0x9feb79a0, 0x3fd44394, // sqrt(11)
-  0x118567cc, 0x3fe360ad, // sqrt(13)
-  0xabfb41c0, 0x3fbf83d9, // sqrt(17)
+  0xdef933f3, 0x04b5ff3f, // sqrt(2)
+  0x65c242d7, 0xb3ddff3f, // sqrt(3)
+  0xa5bfdcbc, 0x1b8f0040, // sqrt(5)
+  0xc7974efd, 0x53a90040, // sqrt(7)
+  0x79eb9f94, 0x43d40040, // sqrt(11)
+  0xcf0a235a, 0xc1e60040, // sqrt(13)
+  0x687f357b, 0xf0830140, // sqrt(17)
+  0x6f22a319, 0x7c8b0140, // sqrt(19)
 ]);
 
-// Key Extension
-// temp: 64 block size only
-function extendKeyFrom(src: string | Uint32Array): Uint32Array {
-  if (typeof src === 'string') src = s2i(src);
-
-  const rounds = 24 + 2;
-  const key = new Uint32Array(rounds);
-
-  if (src.length > 8) throw new Error('Initial key is too long');
-
-  let i = 0;
-  for (; i < src.length; i++) key[i] = src[i];
-  for (let j = 0; j + i < 8; j++) key[i + j] = _c[j * 2];
-  for (; i < rounds; i++) key[i] = i ^ key[(i % 6) + 2];
-
-  return key;
-}
-
-// temp
-function sum2n(x: number, y: number): number {
-  return x ^ y;
-}
+const ROUNDS = 24;
 
 // temp: only for 64 bit blocks
 function F(a: number, b: number) {
   // to do: bool function
-  a = a % 2;
-  b = b % 2;
+  a %= 2;
+  b %= 2;
 
   if (a > 0 && b > 0) return 19;
   if (a > 0 && b === 0) return 10;
@@ -47,38 +27,107 @@ function F(a: number, b: number) {
   return 11;
 }
 
+// temp XOR
+function sum2n(x: number, y: number): number {
+  return (x ^ y) >>> 0;
+}
+
+// rot right (cycle)
+function rot(x: number, N: number) {
+  return ((x >> N) | (x << (32 - N))) >>> 0;
+}
+
+// Key Extension
+// temp: 64 block size only
+function extendKeyFrom(src: string | Uint32Array): Uint32Array {
+  if (typeof src === 'string') src = s2i(src);
+
+  const c = new Uint32Array(ROUNDS + 2);
+
+  if (src.length > 8) throw new Error('Initial key is too long');
+
+  // constants
+  let i = 0;
+  for (; i < src.length; i++) c[i] = src[i];
+  for (let j = 0; j + i < 8; j++) c[i + j] = _c[j * 2];
+  for (; i < ROUNDS; i++) c[i] = i ^ c[(i % 6) + 2];
+
+  // key blocks
+  const keys = new Uint32Array(ROUNDS);
+  let L = c[0];
+  let R = c[1];
+
+  // key rounds
+  for (i = 0; i < ROUNDS; i++) {
+    keys[i] = (rot(sum2n(L, c[i + 2]), F(L, sum2n(L, c[i + 2]))) ^ R >>> 0);
+    R = L;
+    L = keys[i];
+  }
+
+  return keys;
+}
+
 // Message Encryption
 // temp: only for 64 bit blocks
-export default function encrypt(message: string | Uint32Array, key: string | Uint32Array): string {
+function encrypt(message: string | Uint32Array, key: string | Uint32Array): Uint32Array {
   if (typeof message === 'string') message = s2i(message);
-  const c = extendKeyFrom(key);
+  key = extendKeyFrom(key);
+
   const out = new Uint32Array(message.length);
 
-  for(let i = 0; i < message.length; i += 2) {
-    let left = message[i];
-    let right = message[i + 1]; 
-    let leftKey = c[0];
-    let rightKey = c[1];
+  // for each block
+  for (let i = 0; i < message.length; i += 2) {
+    let L = message[i];
+    let R = message[i + 1];
 
-    // round functions
-    for (let r = 0; r < 24; r++) {
-      const tmp = left; 
-      const tmpKey = leftKey;
-
-      // round key
-      leftKey = (sum2n(leftKey, c[r + 2]) >>> F(leftKey, sum2n(leftKey, c[r + 2]))) ^ rightKey;
-      rightKey = tmpKey;
+    // round function
+    for (let r = 0; r < ROUNDS; r++) {
+      const tmp = L;
 
       // round block
-      left = (sum2n(left, leftKey) >>> F(left, sum2n(leftKey, leftKey))) ^ right;
-      right = tmp;
-
-      console.log(left);
+      L = (rot(sum2n(L, key[r]), F(L, sum2n(L, key[r]))) ^ R) >>> 0;
+      R = tmp;
     }
-    
-    out[i] = left;
-    out[i + 1] = right;
+
+    out[i] = L;
+    out[i + 1] = R;
   }
-  
-  return i2h(out);
+
+  return out;
 }
+
+// Message Decryption
+// temp: only for 64 bit blocks
+function decrypt(message: string | Uint32Array, key: string | Uint32Array): Uint32Array {
+  if (typeof message === 'string') message = s2i(message);
+  key = extendKeyFrom(key);
+
+  const out = new Uint32Array(message.length);
+
+  // for each block
+  for (let i = 0; i < message.length; i += 2) {
+    let L = message[i];
+    let R = message[i + 1];
+
+    // round function
+    for (let r = ROUNDS - 1; r >= 0; r--) {
+      const tmp = R;
+
+      // round block
+      R = (L ^ rot(sum2n(R, key[r]), F(R, sum2n(R, key[r])))) >>> 0;
+      L = tmp;
+    }
+
+    out[i] = L;
+    out[i + 1] = R;
+  }
+
+  return out;
+}
+
+export default {
+  encrypt,
+  decrypt,
+  i2h,
+  s2i,
+};
